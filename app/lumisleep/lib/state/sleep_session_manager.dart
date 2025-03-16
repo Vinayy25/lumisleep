@@ -4,10 +4,95 @@ import 'dart:math';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vibration/vibration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:lumisleep/services/overlay_service.dart';
+
+// Create a custom overlay service that doesn't depend on third-party packages
+import 'dart:async';
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+class SimpleOverlayService {
+  static const platform = MethodChannel('app.lumisleep/overlay');
+  static bool _isRunning = false;
+  static Timer? _updateTimer;
+  static double _currentFrequency = 30.0;
+  static double _minOpacity = 0.0;
+  static double _maxOpacity = 0.5;
+  static int _currentOpacity = 0;
+
+  static Future<void> initialize() async {
+    // No special initialization needed
+  }
+
+  static Future<void> startOverlay({
+    required double frequency,
+    required double minOpacity,
+    required double maxOpacity,
+  }) async {
+    if (_isRunning) return;
+
+    _currentFrequency = frequency;
+    _minOpacity = minOpacity;
+    _maxOpacity = maxOpacity;
+
+    try {
+      await platform.invokeMethod('startOverlay');
+      _isRunning = true;
+      _updateTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+        _updateOverlayOpacity();
+      });
+    } catch (e) {
+      print('Error starting overlay: $e');
+    }
+  }
+
+  static void updateFrequency(double frequency) {
+    _currentFrequency = frequency;
+
+    if (_isRunning) {
+      platform.invokeMethod('updateOverlay', {
+        'frequency': frequency,
+      });
+    }
+  }
+
+  static Future<void> stopOverlay() async {
+    if (!_isRunning) return;
+
+    _updateTimer?.cancel();
+    await platform.invokeMethod('stopOverlay');
+    _isRunning = false;
+  }
+
+  static void _updateOverlayOpacity() {
+    if (!_isRunning) return;
+
+    final time = DateTime.now().millisecondsSinceEpoch / 1000;
+    final wave = sin(2 * pi * _currentFrequency * time);
+    final normalized = (wave + 1) / 2; // Convert from [-1,1] to [0,1]
+
+    // Map to opacity range
+    final opacity = _minOpacity + normalized * (_maxOpacity - _minOpacity);
+    _currentOpacity = (opacity * 255).round();
+
+    // Update state for the overlay widget
+    OverlayStateManager.getInstance()
+        .updateState(_currentOpacity, _currentFrequency);
+
+    // Use shareData instead of sendData
+    FlutterOverlayWindow.shareData({
+      "type": "update_opacity",
+      "opacity": _currentOpacity,
+      "frequency": _currentFrequency
+    });
+  }
+}
 
 enum SessionState { idle, running, paused, error }
 
@@ -66,9 +151,15 @@ class SleepSessionManager with ChangeNotifier {
   // Get remaining session time as formatted string
   String get remainingTimeFormatted {
     final seconds = remainingTimeSeconds;
-    final minutes = seconds ~/ 60;
-    final remainingSeconds = seconds % 60;
-    return '$minutes:${remainingSeconds.toString().padLeft(2, '0')}';
+
+    // Format differently based on duration
+    if (seconds < 60) {
+      return '$seconds sec';
+    } else {
+      final minutes = seconds ~/ 60;
+      final remainingSeconds = seconds % 60;
+      return '$minutes:${remainingSeconds.toString().padLeft(2, '0')}';
+    }
   }
 
   // Get session progress as percentage (0-100)
@@ -86,6 +177,9 @@ class SleepSessionManager with ChangeNotifier {
     if (_isInitialized) return;
 
     try {
+      // Initialize the overlay service
+      await OverlayService.initialize();
+
       // Save default brightness for restoration later
       defaultBrightness = await ScreenBrightness().current;
 
@@ -109,9 +203,9 @@ class SleepSessionManager with ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      // Load session duration (default 15min)
-      final minutes = prefs.getInt('sessionDuration') ?? 15;
-      sessionDuration = Duration(minutes: minutes);
+      // Load session duration (default 15min, or 900 seconds)
+      final seconds = prefs.getInt('sessionDurationSeconds') ?? 900;
+      sessionDuration = Duration(seconds: seconds);
 
       // Load vibration preference (default true)
       useVibration = prefs.getBool('useVibration') ?? true;
@@ -133,7 +227,7 @@ class SleepSessionManager with ChangeNotifier {
   Future<void> _savePreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('sessionDuration', sessionDuration.inMinutes);
+      await prefs.setInt('sessionDurationSeconds', sessionDuration.inSeconds);
       await prefs.setBool('useVibration', useVibration);
       await prefs.setDouble('minBrightness', minBrightness);
       await prefs.setDouble('maxBrightness', maxBrightness);
@@ -146,9 +240,14 @@ class SleepSessionManager with ChangeNotifier {
 
   // Set session duration in minutes
   Future<void> setSessionDuration(int minutes) async {
+    await setSessionDurationFromSeconds(minutes * 60);
+  }
+
+  // Add this new method to set duration in seconds
+  Future<void> setSessionDurationFromSeconds(int seconds) async {
     if (_state == SessionState.running) return;
 
-    sessionDuration = Duration(minutes: minutes);
+    sessionDuration = Duration(seconds: seconds);
     await _savePreferences();
     notifyListeners();
   }
@@ -240,7 +339,24 @@ class SleepSessionManager with ChangeNotifier {
 
       // Start processes
       _startFrequencyTimer();
-      _startPulseTimer();
+
+      // Use system overlay for pulse effect (works in background)
+      if (Platform.isAndroid) {
+        try {
+          await OverlayService.startOverlay(
+            frequency: currentFrequency,
+            minOpacity: 0.0,
+            maxOpacity: 0.5,
+          );
+        } catch (e) {
+          debugPrint('Overlay error (falling back to direct brightness): $e');
+          // Fall back to regular brightness control if overlay fails
+          _startPulseTimer();
+        }
+      } else {
+        // On iOS, still try the regular brightness control when in foreground
+        _startPulseTimer();
+      }
 
       // Start vibration if enabled
       if (useVibration && _hasVibrator) {
@@ -313,6 +429,9 @@ class SleepSessionManager with ChangeNotifier {
     if (_state == SessionState.idle) return;
 
     try {
+      // Stop the overlay
+      await OverlayService.stopOverlay();
+
       // Cancel all timers
       _frequencyTimer?.cancel();
       _pulseTimer?.cancel();
@@ -378,6 +497,9 @@ class SleepSessionManager with ChangeNotifier {
             1.0 - (remainingTimeSeconds / sessionDuration.inSeconds);
         currentFrequency =
             startFrequency - ((startFrequency - endFrequency) * progress);
+
+        // Update overlay with new frequency
+        OverlayService.updateFrequency(currentFrequency);
 
         // End session when time is up
         if (remainingTimeSeconds <= 0) {
@@ -492,18 +614,33 @@ class SleepSessionManager with ChangeNotifier {
   void onAppLifecycleChange(AppLifecycleState state) async {
     switch (state) {
       case AppLifecycleState.paused:
-        // App going to background, may need special handling on iOS
-        if (Platform.isIOS && _state == SessionState.running) {
-          // iOS doesn't allow brightness control in background
-          // Consider pausing here or implementing fallback
+        // App going to background
+        if (_state == SessionState.running) {
+          // Stop direct brightness control (won't work in background)
+          _pulseTimer?.cancel();
+
+          // Make sure overlay is running (works in background)
+          if (Platform.isAndroid && _state == SessionState.running) {
+            try {
+              await OverlayService.startOverlay(
+                frequency: currentFrequency,
+                minOpacity: 0.0,
+                maxOpacity: 0.5,
+              );
+            } catch (e) {
+              debugPrint('Failed to start overlay in background: $e');
+            }
+          }
         }
         break;
 
       case AppLifecycleState.resumed:
         // App coming to foreground
         if (_state == SessionState.running) {
-          // Ensure brightness control is working
-          _canControlBrightness = true;
+          // May want to restart direct brightness control here
+          if (_pulseTimer == null || !_pulseTimer!.isActive) {
+            _startPulseTimer();
+          }
         }
         break;
 

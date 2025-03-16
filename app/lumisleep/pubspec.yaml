@@ -17,6 +17,7 @@ dependencies:
   android_alarm_manager_plus: ^3.0.1
   shared_preferences: ^2.2.0
   wakelock_plus: ^1.2.10
+  flutter_overlay_window: ^0.4.5
 dev_dependencies:
   flutter_test:
     sdk: flutter

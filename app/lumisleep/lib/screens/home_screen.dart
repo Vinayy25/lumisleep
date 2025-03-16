@@ -37,21 +37,27 @@ class HomeScreen extends StatelessWidget {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        Text(
-                            '${sleepManager.sessionDuration.inMinutes} minutes'),
+                        // Update the text to show seconds when under 1 minute
+                        Text(sleepManager.sessionDuration.inSeconds < 60
+                            ? '${sleepManager.sessionDuration.inSeconds} seconds'
+                            : '${sleepManager.sessionDuration.inMinutes} minutes'),
                         Expanded(
                           child: Slider(
-                            value: sleepManager.sessionDuration.inMinutes
-                                .toDouble(),
-                            min: 5,
-                            max: 30,
-                            divisions: 5,
-                            label:
-                                '${sleepManager.sessionDuration.inMinutes} min',
+                            value: sleepManager.sessionDuration.inSeconds /
+                                60, // Convert to minutes for slider value
+                            min: 0.5, // 30 seconds minimum
+                            max: 30, // 30 minutes maximum
+                            divisions: 59, // Allow increments of 30 seconds
+                            label: sleepManager.sessionDuration.inSeconds < 60
+                                ? '${sleepManager.sessionDuration.inSeconds} sec'
+                                : '${sleepManager.sessionDuration.inMinutes} min',
                             onChanged: sleepManager.isRunning
                                 ? null
-                                : (value) => sleepManager
-                                    .setSessionDuration(value.round()),
+                                : (value) {
+                                    int seconds = (value * 60).round();
+                                    sleepManager
+                                        .setSessionDurationFromSeconds(seconds);
+                                  },
                           ),
                         ),
                       ],
@@ -94,18 +100,13 @@ class HomeScreen extends StatelessWidget {
                     // Start/stop button
                     Center(
                       child: ElevatedButton.icon(
-                        onPressed: () {
+                        onPressed: () async {
                           if (sleepManager.isRunning) {
                             sleepManager.stopSession();
                           } else {
-                            // Show immediate feedback before starting the session
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Starting sleep session...'),
-                                duration: Duration(seconds: 1),
-                              ),
-                            );
-                            sleepManager.startSession();
+                          
+                              sleepManager.startSession();
+                        
                           }
                         },
                         style: ElevatedButton.styleFrom(
