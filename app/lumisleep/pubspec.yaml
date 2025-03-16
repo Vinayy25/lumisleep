@@ -1,11 +1,11 @@
 name: lumisleep
 description: Sleep aid app using rhythmic screen brightness and vibration.
-publish_to: 'none'
+publish_to: "none"
 
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
   flutter:
@@ -16,8 +16,7 @@ dependencies:
   flutter_foreground_task: ^6.0.0+1
   android_alarm_manager_plus: ^3.0.1
   shared_preferences: ^2.2.0
-  wakelock: ^0.4.0
-
+  wakelock_plus: ^1.2.10
 dev_dependencies:
   flutter_test:
     sdk: flutter

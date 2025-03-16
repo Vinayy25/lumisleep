@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:lumisleep/state/sleep_session_manager.dart';
 import 'package:lumisleep/widgets/pulsing_overlay.dart';
 import 'package:provider/provider.dart';
@@ -16,6 +17,12 @@ class HomeScreen extends StatelessWidget {
               appBar: AppBar(
                 title: const Text('LumiSleep'),
                 backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+                actions: [
+                  IconButton(
+                    icon: Icon(Icons.settings),
+                    onPressed: () => _openSettings(context),
+                  ),
+                ],
               ),
               body: Padding(
                 padding: const EdgeInsets.all(24.0),
@@ -87,9 +94,20 @@ class HomeScreen extends StatelessWidget {
                     // Start/stop button
                     Center(
                       child: ElevatedButton.icon(
-                        onPressed: sleepManager.isRunning
-                            ? sleepManager.stopSession
-                            : sleepManager.startSession,
+                        onPressed: () {
+                          if (sleepManager.isRunning) {
+                            sleepManager.stopSession();
+                          } else {
+                            // Show immediate feedback before starting the session
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Starting sleep session...'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                            sleepManager.startSession();
+                          }
+                        },
                         style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 32,
@@ -115,6 +133,47 @@ class HomeScreen extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+
+  void _openSettings(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Settings'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              title: Text('Battery Optimization'),
+              subtitle: Text(
+                  'Exempt app from battery optimization for better performance'),
+              trailing: Icon(Icons.arrow_forward),
+              onTap: () async {
+                Navigator.pop(context);
+                await FlutterForegroundTask
+                    .openIgnoreBatteryOptimizationSettings();
+              },
+            ),
+            ListTile(
+              title: Text('Overlay Permission'),
+              subtitle: Text('Allow app to display over other apps'),
+              trailing: Icon(Icons.arrow_forward),
+              onTap: () async {
+                Navigator.pop(context);
+                await FlutterForegroundTask.openSystemAlertWindowSettings();
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 }
