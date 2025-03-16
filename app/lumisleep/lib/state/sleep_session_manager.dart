@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:math';
 import 'dart:io';
+import 'package:lumisleep/utils/brightness_control.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -97,13 +98,13 @@ class SimpleOverlayService {
 enum SessionState { idle, running, paused, error }
 
 class SleepSessionManager with ChangeNotifier {
-  // For development - set to true to disable features that might crash the app
-  final bool debugMode = true;
+  // Add debug mode flag
+  bool debugMode = false; // Set to true during development
 
   // Session configuration
   double startFrequency = 30.0;
   double endFrequency = 7.0;
-  double currentFrequency = 30.0;
+  double currentFrequency = 20.0;
   SessionState _state = SessionState.idle;
   bool useVibration = true;
   Duration sessionDuration = const Duration(minutes: 15);
@@ -129,6 +130,10 @@ class SleepSessionManager with ChangeNotifier {
   DateTime? _sessionEndTime;
   DateTime? _sessionPausedAt;
   Duration? _remainingTimeAtPause;
+  bool isActive = false;
+
+  // Add this line with your other class properties (around line 145)
+  double _savedBrightness = 0.5;
 
   // Get current session state
   SessionState get state => _state;
@@ -177,15 +182,44 @@ class SleepSessionManager with ChangeNotifier {
     if (_isInitialized) return;
 
     try {
+      // Check vibration capabilities with detailed logging
+      _hasVibrator = await Vibration.hasVibrator() ?? false;
+      _hasAmplitudeControl = await Vibration.hasAmplitudeControl() ?? false;
+
+      debugPrint("==== VIBRATION CAPABILITIES ====");
+      debugPrint("Device has vibrator: $_hasVibrator");
+      debugPrint("Device has amplitude control: $_hasAmplitudeControl");
+
+      if (_hasVibrator) {
+        debugPrint("Testing vibration...");
+        await Vibration.vibrate(duration: 100);
+        debugPrint("Vibration test completed");
+      }
+
+      // ... rest of the initialize method
+
       // Initialize the overlay service
       await OverlayService.initialize();
 
-      // Save default brightness for restoration later
-      defaultBrightness = await ScreenBrightness().current;
+      // Save default brightness for restoration later using BrightnessControl
+      defaultBrightness = await BrightnessControl.getBrightness();
 
       // Check if device has vibration capabilities
       _hasVibrator = await Vibration.hasVibrator() ?? false;
       _hasAmplitudeControl = await Vibration.hasAmplitudeControl() ?? false;
+
+      debugPrint(
+          "Vibration available: $_hasVibrator, amplitude control: $_hasAmplitudeControl");
+
+      // Test vibration to ensure it works
+      if (_hasVibrator) {
+        Vibration.vibrate(duration: 100);
+        debugPrint("Vibration test performed");
+      }
+
+      // Check brightness control permission
+      _canControlBrightness = await BrightnessControl.hasPermission();
+      debugPrint("Brightness control permission: $_canControlBrightness");
 
       // Load saved preferences
       await _loadPreferences();
@@ -307,88 +341,85 @@ class SleepSessionManager with ChangeNotifier {
     return true;
   }
 
-  // Start sleep session
-  Future<bool> startSession() async {
+  // Your startSession method can now use _savedBrightness without errors
+  Future<bool> startSession(BuildContext context) async {
     if (_state == SessionState.running) return true;
-    if (!_isInitialized) await initialize();
 
     try {
-      // Check basic permissions for brightness
-      await _checkPermissions();
+      debugPrint("Starting sleep session...");
 
-      // Restore session if paused
-      if (_state == SessionState.paused && _remainingTimeAtPause != null) {
-        _sessionEndTime = DateTime.now().add(_remainingTimeAtPause!);
+      // First check Android permission for WRITE_SETTINGS
+      if (debugMode) {
+        debugPrint("Checking brightness control permissions...");
+      }
+
+      final hasPermission = await BrightnessControl.hasPermission();
+      if (!hasPermission) {
+        if (debugMode) {
+          debugPrint("No permission to control brightness, requesting...");
+          // Show a message to the user
+          _lastError = "Need WRITE_SETTINGS permission (debug mode)";
+          notifyListeners();
+          return false;
+        } else {
+          // Show a dialog explaining what to do
+          _showPermissionDialog(context);
+
+          // Request permissions - this should open system settings
+          final granted = await BrightnessControl.requestPermission();
+          if (!granted) {
+            _lastError = "Please enable 'Modify system settings' permission";
+            _state = SessionState.error;
+            notifyListeners();
+            return false;
+          }
+        }
+      }
+
+      if (debugMode) {
+        debugPrint("Saving current brightness...");
+      }
+
+      // Save current brightness
+      await BrightnessControl.saveBrightness();
+
+      if (debugMode) {
+        debugPrint("Starting overlay service...");
+      }
+
+      // Start the overlay service with debugging disabled in debug mode
+      final started = await OverlayService.startOverlay(
+        frequency: currentFrequency,
+        minOpacity: 0.0,
+        maxOpacity: 0.6,
+        debugMode: debugMode,
+      );
+
+      if (started) {
+        _state = SessionState.running;
+        // Start timer for session duration
+        if (debugMode) {
+          debugPrint("Starting session timer...");
+        }
+        _startSessionTimer();
+        notifyListeners();
+        return true;
       } else {
-        // Start new session
-        currentFrequency = startFrequency;
-        _sessionEndTime = DateTime.now().add(sessionDuration);
+        _lastError = "Failed to start overlay";
+        _state = SessionState.error;
+        notifyListeners();
+        return false;
       }
-
-      // Update state first - this ensures the UI updates even if some components fail
-      _state = SessionState.running;
-      _lastError = null;
-      notifyListeners();
-
-      // Try to keep screen on
-      try {
-        await WakelockPlus.enable();
-      } catch (e) {
-        debugPrint('Wakelock error (continuing anyway): $e');
-      }
-
-      // Start processes
-      _startFrequencyTimer();
-
-      // Use system overlay for pulse effect (works in background)
-      if (Platform.isAndroid) {
-        try {
-          await OverlayService.startOverlay(
-            frequency: currentFrequency,
-            minOpacity: 0.0,
-            maxOpacity: 0.5,
-          );
-        } catch (e) {
-          debugPrint('Overlay error (falling back to direct brightness): $e');
-          // Fall back to regular brightness control if overlay fails
-          _startPulseTimer();
-        }
-      } else {
-        // On iOS, still try the regular brightness control when in foreground
-        _startPulseTimer();
-      }
-
-      // Start vibration if enabled
-      if (useVibration && _hasVibrator) {
-        try {
-          await _startVibrationTimer();
-        } catch (e) {
-          debugPrint('Vibration error (continuing anyway): $e');
-        }
-      }
-
-      // Start foreground service on Android - do this LAST as it may fail
-      if (Platform.isAndroid && !debugMode) {
-        try {
-          await FlutterForegroundTask.startService(
-            notificationTitle: "Sleep session active",
-            notificationText: "Pulsing to help you sleep",
-            callback: startForegroundTask,
-          );
-
-          // If successful, start notification updates
-          _startNotificationUpdateTimer();
-        } catch (e) {
-          // Log but continue - the app can work without foreground service
-          debugPrint('Foreground service error (continuing anyway): $e');
-        }
-      }
-
-      return true;
     } catch (e) {
-      _lastError = "Failed to start session: ${e.toString()}";
+      _lastError = "Start session error: ${e.toString()}";
       _state = SessionState.error;
-      debugPrint(_lastError);
+
+      // Print detailed error info for debugging
+      debugPrint("ERROR STARTING SESSION: $e");
+      if (e is Error) {
+        debugPrint("STACKTRACE: ${e.stackTrace}");
+      }
+
       notifyListeners();
       return false;
     }
@@ -424,49 +455,53 @@ class SleepSessionManager with ChangeNotifier {
     }
   }
 
-  // Stop sleep session
+  // Make sure vibration is properly stopped
   Future<void> stopSession() async {
     if (_state == SessionState.idle) return;
 
-    try {
-      // Stop the overlay
-      await OverlayService.stopOverlay();
+    debugPrint("Stopping session...");
 
-      // Cancel all timers
-      _frequencyTimer?.cancel();
-      _pulseTimer?.cancel();
-      _vibrationTimer?.cancel();
-      _notificationUpdateTimer?.cancel();
+    // Cancel all the timers first
+    _frequencyTimer?.cancel();
+    _pulseTimer?.cancel();
+    _vibrationTimer?.cancel();
+    _notificationUpdateTimer?.cancel();
 
-      // Reset brightness
-      await ScreenBrightness().setScreenBrightness(defaultBrightness);
-
-      // Stop vibration
-      if (_hasVibrator) {
+    // Stop vibration with extra care
+    if (_hasVibrator) {
+      try {
         await Vibration.cancel();
+        // Additional cancel to make absolutely sure
+        await Future.delayed(Duration(milliseconds: 100));
+        await Vibration.cancel();
+        debugPrint("✅ Vibration stopped successfully");
+      } catch (e) {
+        debugPrint("❌ Error stopping vibration: $e");
       }
-
-      // Allow screen to turn off
-      await WakelockPlus.disable();
-
-      // Stop foreground service on Android
-      if (Platform.isAndroid) {
-        await FlutterForegroundTask.stopService();
-      }
-
-      // Reset state
-      _state = SessionState.idle;
-      _sessionEndTime = null;
-      _sessionPausedAt = null;
-      _remainingTimeAtPause = null;
-
-      notifyListeners();
-    } catch (e) {
-      _lastError = "Error stopping session: ${e.toString()}";
-      _state = SessionState.error;
-      debugPrint(_lastError);
-      notifyListeners();
     }
+
+    // Rest of your stopSession method...
+    // Stop the overlay
+    await OverlayService.stopOverlay();
+
+    // Reset screen brightness
+    try {
+      await BrightnessControl.resetBrightness();
+      await BrightnessControl.restoreBrightness();
+    } catch (e) {
+      debugPrint("Error resetting brightness: $e");
+    }
+
+    // Allow screen to turn off again
+    WakelockPlus.disable();
+
+    // Stop foreground service if running
+    if (Platform.isAndroid) {
+      await FlutterForegroundTask.stopService();
+    }
+
+    _state = SessionState.idle;
+    notifyListeners();
   }
 
   // Update Android notification periodically
@@ -485,6 +520,8 @@ class SleepSessionManager with ChangeNotifier {
 
   // Gradually decrease frequency over time
   void _startFrequencyTimer() {
+    double lastVibratedFrequency = currentFrequency;
+
     _frequencyTimer?.cancel();
     _frequencyTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_state != SessionState.running) {
@@ -500,6 +537,15 @@ class SleepSessionManager with ChangeNotifier {
 
         // Update overlay with new frequency
         OverlayService.updateFrequency(currentFrequency);
+
+        // Update vibration if frequency has changed significantly
+        // This helps vibration stay in sync with visual pulsing
+        if (useVibration &&
+            _hasVibrator &&
+            (lastVibratedFrequency - currentFrequency).abs() > 0.5) {
+          directVibrate();
+          lastVibratedFrequency = currentFrequency;
+        }
 
         // End session when time is up
         if (remainingTimeSeconds <= 0) {
@@ -532,8 +578,14 @@ class SleepSessionManager with ChangeNotifier {
         currentBrightness =
             minBrightness + normalized * (maxBrightness - minBrightness);
 
-        // Set screen brightness
-        await ScreenBrightness().setScreenBrightness(currentBrightness);
+        // Set system brightness instead of app brightness
+        await BrightnessControl.setBrightness(currentBrightness);
+
+        // Debug log to verify brightness changes
+        if (DateTime.now().millisecondsSinceEpoch % 1000 < 50) {
+          debugPrint(
+              "System brightness set to: ${currentBrightness.toStringAsFixed(2)}");
+        }
       } catch (e) {
         // If we get multiple errors, disable brightness control
         _canControlBrightness = false;
@@ -547,14 +599,54 @@ class SleepSessionManager with ChangeNotifier {
       updateBrightness();
     });
   }
+  List<int> generateDynamicPattern(double frequency) {
+    // Calculate where we are in the frequency range (0 = start frequency, 1 = end frequency)
+    double progress =
+        (startFrequency - frequency) / (startFrequency - endFrequency);
+    progress = progress.clamp(0.0, 1.0);
 
-  // Generate vibration pattern at current frequency
+    debugPrint(
+        "🔄 Generating pattern for frequency ${frequency.toStringAsFixed(1)}Hz (progress: ${(progress * 100).toStringAsFixed(0)}%)");
+
+    // At the beginning (high frequency): shorter, faster pulses with more repetitions
+    // At the end (low frequency): longer, slower pulses with fewer repetitions
+
+    if (progress < 0.3) {
+      // High frequency range (beginning of session)
+      // Multiple short pulses for alertness
+      return [0, 200, 150, 200, 150, 200, 150];
+    } else if (progress < 0.6) {
+      // Mid frequency range (middle of session)
+      // Medium pulses for transition
+      return [0, 250, 180, 250, 180];
+    } else if (progress < 0.8) {
+      // Lower frequency range (approaching end)
+      // Longer, fewer pulses for relaxation
+      return [0, 300, 200, 300, 200];
+    } else {
+      // Very low frequency (end of session)
+      // Long, deep pulses for deep relaxation
+      return [0, 400, 250, 400];
+    }
+  }
+
+
+  // Generate vibration pattern at current frequency - DIRECT PORT FROM WORKING CODE
   Future<void> _startVibrationTimer() async {
-    if (!_hasVibrator || !useVibration) return;
-
     _vibrationTimer?.cancel();
 
     try {
+      debugPrint(
+          "🟢 Starting vibration timer with frequency ${currentFrequency.toStringAsFixed(1)} Hz");
+
+      // Clean up any existing vibration first
+      try {
+        await Vibration.cancel();
+        debugPrint("Cancelled existing vibration");
+      } catch (e) {
+        debugPrint("Error cancelling existing vibration: $e");
+      }
+
       // We'll create a custom pattern based on current frequency
       void updateVibration() async {
         if (_state != SessionState.running || !useVibration) {
@@ -578,35 +670,111 @@ class SleepSessionManager with ChangeNotifier {
                 .clamp(64, 255)
             : 255;
 
+        debugPrint(
+            "🟡 Vibrating with pattern: ON for ${pulseLength}ms, OFF for ${interval - pulseLength}ms, intensity $intensity");
+
         // Create pattern of alternating vibration/pause
         try {
+          // IMPORTANT: Using a specific pattern format that worked in previous code
+          final pattern = generateDynamicPattern(currentFrequency);
+
+
+
           if (_hasAmplitudeControl) {
+            final intensities = [0, intensity, 0];
+            debugPrint(
+                "📳 Calling vibrate with pattern $pattern, intensities $intensities, repeat -1");
+
             await Vibration.vibrate(
-              pattern: [0, pulseLength, interval - pulseLength],
-              intensities: [0, intensity, 0],
+              pattern: pattern,
+              intensities: intensities,
               repeat: -1,
             );
           } else {
+            debugPrint("📳 Calling vibrate with pattern $pattern, repeat -1");
+
             await Vibration.vibrate(
-              pattern: [0, pulseLength, interval - pulseLength],
+              pattern: pattern,
               repeat: -1,
             );
           }
+
+          debugPrint("✅ Vibration started successfully");
         } catch (e) {
+          debugPrint("❌ Vibration error: ${e.toString()}");
           _lastError = "Vibration error: ${e.toString()}";
-          debugPrint(_lastError);
         }
       }
+
+      // Important: Call updateVibration immediately once, then setup periodic timer
+      updateVibration();
 
       _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
         updateVibration();
       });
-
-      // Start initial vibration
-      updateVibration();
     } catch (e) {
       _lastError = "Vibration initialization error: ${e.toString()}";
-      debugPrint(_lastError);
+      debugPrint("❌ Vibration initialization error: ${e.toString()}");
+    }
+  }
+
+  // New: Direct vibration function that works reliably
+  Future<bool> directVibrate() async {
+    // First, cancel any existing vibration
+    try {
+      await Vibration.cancel();
+      await Future.delayed(Duration(milliseconds: 100));
+      debugPrint("📱 Previous vibration cancelled");
+    } catch (e) {
+      debugPrint("⚠️ Error cancelling vibration: $e");
+    }
+
+    debugPrint(
+        "📳 Starting direct vibration at ${currentFrequency.toStringAsFixed(1)}Hz");
+
+    try {
+      // Calculate pattern based on current frequency
+      final interval = (1000 / currentFrequency).round(); // Total cycle length
+      final pulseLength =
+          (interval / 2).clamp(20, 200).round(); // Active vibration time
+      final pauseLength = interval - pulseLength; // Pause time
+
+      // Use fixed pattern for higher frequencies
+      final pattern = currentFrequency > 15
+          ? [0, 100, 100] // Faster for high frequencies
+          : [0, pulseLength, pauseLength];
+
+      // Calculate intensity (higher for lower frequencies)
+      int intensity = 255;
+      if (_hasAmplitudeControl) {
+        // Higher intensity for lower frequencies
+        double intensityFactor = 1.0 -
+            ((currentFrequency - endFrequency) /
+                    (startFrequency - endFrequency))
+                .clamp(0.0, 1.0);
+        intensity = (intensityFactor * 255).round().clamp(100, 255);
+      }
+
+      debugPrint("📳 Vibrate pattern: $pattern, intensity: $intensity");
+
+      if (_hasAmplitudeControl) {
+        await Vibration.vibrate(
+          pattern: pattern,
+          intensities: [0, intensity, 0],
+          repeat: -1, // Continuous repeat
+        );
+      } else {
+        await Vibration.vibrate(
+          pattern: pattern,
+          repeat: -1, // Continuous repeat
+        );
+      }
+
+      debugPrint("✅ Direct vibration started successfully");
+      return true;
+    } catch (e) {
+      debugPrint("❌ Direct vibration error: $e");
+      return false;
     }
   }
 
@@ -649,6 +817,26 @@ class SleepSessionManager with ChangeNotifier {
     }
   }
 
+  Future<void> testVibration() async {
+    debugPrint("Testing basic vibration...");
+
+    // Test if simple vibration works
+    await Vibration.cancel();
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    debugPrint("Simple vibration test:");
+    await Vibration.vibrate(duration: 500);
+    await Future.delayed(const Duration(seconds: 1));
+
+    debugPrint("Pattern test:");
+    await Vibration.vibrate(
+      pattern: [0, 300, 200, 300, 200],
+      repeat: 0,
+    );
+
+    debugPrint("Done testing vibration");
+  }
+
   // Reset error state
   void resetError() {
     if (_state == SessionState.error) {
@@ -662,6 +850,82 @@ class SleepSessionManager with ChangeNotifier {
   void dispose() {
     stopSession();
     super.dispose();
+  }
+
+  // Add this method to your SleepSessionManager class
+  void _startSessionTimer() {
+    // Calculate session end time
+    _sessionEndTime = DateTime.now().add(sessionDuration);
+
+    // Start the various timers needed for the session
+    _startFrequencyTimer();
+
+    // If using in-app brightness control
+    if (_canControlBrightness) {
+      _startPulseTimer();
+    }
+    _startVibrationTimer();
+
+    // Start vibration immediately if enabled
+    if (useVibration && _hasVibrator) {
+      // Use the simple direct approach instead of the timer-based approach
+      directVibrate().then((success) {
+        if (success) {
+          // Setup a timer to update vibration periodically when frequency changes
+          _vibrationTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+            if (_state == SessionState.running && useVibration) {
+              directVibrate();
+            }
+          });
+        }
+      });
+    }
+
+    // Update notification if using foreground service
+    _startNotificationUpdateTimer();
+
+    // Ensure screen stays on during session
+    WakelockPlus.enable();
+
+    // Start foreground service for Android
+    _ensureForegroundService();
+  }
+
+  // Add this method to your SleepSessionManager class
+  void _showPermissionDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Permission Required'),
+        content: Text(
+            'Please enable the "Modify system settings" permission on the next screen to allow brightness control.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Add this method to ensure the foreground service is properly started
+  Future<void> _ensureForegroundService() async {
+    if (Platform.isAndroid) {
+      try {
+        await FlutterForegroundTask.startService(
+          notificationTitle: "Sleep session active",
+          notificationText:
+              "Pulsing at ${currentFrequency.toStringAsFixed(1)} Hz",
+          callback: startForegroundTask,
+          // Add this to match the type in FlutterForegroundTask.init():
+        );
+        debugPrint("Foreground service started successfully");
+      } catch (e) {
+        debugPrint("Error starting foreground service: $e");
+      }
+    }
   }
 }
 

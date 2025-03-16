@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:lumisleep/utils/brightness_control.dart';
 
 class OverlayService {
   static bool _isRunning = false;
@@ -10,18 +11,36 @@ class OverlayService {
   static double _minOpacity = 0.0;
   static double _maxOpacity = 0.6;
   static int _currentOpacity = 50; // Value from 0 to 255
+  static double _defaultBrightness = 0.5; // Default system brightness
+  static bool _useBrightnessControl =
+      true; // Set to true to use brightness control
+  static bool _useOverlay = false; // Disable overlay
 
   /// Initialize overlay service (e.g. request overlay permission)
   static Future<void> initialize() async {
-    // For example, check if permission is granted, and request if not:
-    final bool status = await FlutterOverlayWindow.isPermissionGranted();
-    if (!status) {
-      final bool? granted = await FlutterOverlayWindow.requestPermission();
-      if (granted != true) {
-        debugPrint("Overlay permission was denied.");
+    // Save the current brightness to restore it later
+    try {
+      await BrightnessControl.saveBrightness();
+
+      // Keep the screen on during sessions
+      await BrightnessControl.keepScreenOn(true);
+
+      // Optionally initialize overlay window as well
+      if (_useOverlay) {
+        final bool status = await FlutterOverlayWindow.isPermissionGranted();
+        if (!status) {
+          final bool? granted = await FlutterOverlayWindow.requestPermission();
+          if (granted != true) {
+            debugPrint("Overlay permission was denied.");
+          }
+        }
       }
+    } catch (e) {
+      debugPrint("Error initializing brightness control: $e");
+      // Fallback to overlay method if brightness control fails
+      _useBrightnessControl = false;
+      _useOverlay = true;
     }
-    // You can perform further initialization if needed.
   }
 
   // Start the overlay and begin periodic updates
@@ -29,6 +48,7 @@ class OverlayService {
     required double frequency,
     required double minOpacity,
     required double maxOpacity,
+    bool debugMode = false,
   }) async {
     if (_isRunning) return true;
 
@@ -36,39 +56,39 @@ class OverlayService {
     _minOpacity = minOpacity;
     _maxOpacity = maxOpacity;
 
-    // Check overlay permission
-    final bool status = await FlutterOverlayWindow.isPermissionGranted();
-    if (!status) {
-      final bool? granted = await FlutterOverlayWindow.requestPermission();
-      if (granted != true) {
-        debugPrint("Overlay permission denied");
-        return false;
+    // Try to save current brightness
+    try {
+      _defaultBrightness = await BrightnessControl.getBrightness();
+      if (debugMode) {
+        debugPrint("Current brightness: $_defaultBrightness");
       }
+    } catch (e) {
+      debugPrint("Could not get current brightness: $e");
     }
 
-    // Show the overlay over other apps
-    await FlutterOverlayWindow.showOverlay(
-      enableDrag: false,
-      height: WindowSize.fullCover,
-      width: WindowSize.fullCover,
-      alignment: OverlayAlignment.center,
-      flag: OverlayFlag.defaultFlag,
-    );
+    // IMPORTANT CHANGE: Never use overlay window, as it closes the app
+    _useOverlay = false;
 
     _isRunning = true;
+
+    // Keep the screen on
+    if (!debugMode) {
+      await BrightnessControl.keepScreenOn(true);
+    }
+
     // Allow a short delay before starting updates
     await Future.delayed(const Duration(milliseconds: 500));
-    _startUpdating();
+    _startUpdating(debugMode);
     return true;
   }
 
-  static void _startUpdating() {
+  static void _startUpdating([bool debugMode = false]) {
     _updateTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      _updateOverlayOpacity();
+      _updateOverlayOpacity(debugMode);
     });
   }
 
-  static void _updateOverlayOpacity() {
+  static void _updateOverlayOpacity([bool debugMode = false]) {
     if (!_isRunning) return;
     final time = DateTime.now().millisecondsSinceEpoch / 1000;
     final wave = sin(2 * pi * _currentFrequency * time);
@@ -77,16 +97,34 @@ class OverlayService {
         _minOpacity + normalized * (_maxOpacity - _minOpacity);
     _currentOpacity = (computedOpacity * 255).round();
 
-    // Share overlay update with the overlay widget
-    FlutterOverlayWindow.shareData({
-      "type": "update_opacity",
-      "opacity": _currentOpacity,
-      "frequency": _currentFrequency
-    });
+    // Update brightness if enabled
+    if (_useBrightnessControl) {
+      // Map opacity to brightness (0.0 to 1.0)
+      // Use a narrower range like 0.05 to 0.6 to avoid extremes
+      final minBrightness = 0.05; // Avoid going completely dark
+      final maxBrightness = 0.6; // Avoid going too bright
+      final brightness =
+          minBrightness + normalized * (maxBrightness - minBrightness);
+
+      try {
+        // In debug mode, print the brightness but don't actually change it
+        if (debugMode) {
+          debugPrint("Would set brightness to: $brightness");
+        } else {
+          BrightnessControl.setBrightness(brightness);
+        }
+      } catch (e) {
+        debugPrint("Error setting brightness: $e");
+      }
+    }
 
     // Also update the state stream for your in-app overlay widget
-    OverlayStateManager.getInstance()
-        .updateState(_currentOpacity, _currentFrequency);
+    try {
+      OverlayStateManager.getInstance()
+          .updateState(_currentOpacity, _currentFrequency);
+    } catch (e) {
+      debugPrint("Error updating overlay state: $e");
+    }
   }
 
   static void updateFrequency(double frequency) {
@@ -96,7 +134,23 @@ class OverlayService {
   static Future<void> stopOverlay() async {
     if (!_isRunning) return;
     _updateTimer?.cancel();
-    await FlutterOverlayWindow.closeOverlay();
+
+    // Restore default brightness
+    if (_useBrightnessControl) {
+      try {
+        await BrightnessControl.restoreBrightness();
+        await BrightnessControl.resetBrightness();
+        await BrightnessControl.keepScreenOn(false);
+      } catch (e) {
+        debugPrint("Error restoring brightness: $e");
+      }
+    }
+
+    // Close overlay if needed
+    if (_useOverlay) {
+      // await FlutterOverlayWindow.closeOverlay();
+    }
+
     _isRunning = false;
   }
 }

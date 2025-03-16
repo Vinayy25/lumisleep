@@ -121,6 +121,32 @@ class _OverlayWidgetState extends State<OverlayWidget> {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+   FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'lumisleep_foreground',
+      channelName: 'LumiSleep Foreground Service',
+      channelDescription: 'Keep sleep session running in background',
+      channelImportance: NotificationChannelImportance.LOW,
+      priority: NotificationPriority.LOW,
+      iconData: const NotificationIconData(
+        resType: ResourceType.mipmap,
+        resPrefix: ResourcePrefix.ic,
+        name: 'launcher',
+      ),
+  
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(
+      showNotification: true,
+      playSound: false,
+    ),
+    foregroundTaskOptions: const ForegroundTaskOptions(
+      interval: 1000,
+      autoRunOnBoot: false,
+      allowWifiLock: true,
+    ),
+  );
+
   await AndroidAlarmManager.initialize();
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
