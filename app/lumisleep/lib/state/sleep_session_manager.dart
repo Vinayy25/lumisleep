@@ -324,8 +324,6 @@ class SleepSessionManager with ChangeNotifier {
     notifyListeners();
   }
 
-
-
   // Your startSession method can now use _savedBrightness without errors
   Future<bool> startSession(BuildContext context) async {
     if (_state == SessionState.running) return true;
@@ -442,50 +440,61 @@ class SleepSessionManager with ChangeNotifier {
 
   // Make sure vibration is properly stopped
   Future<void> stopSession() async {
-    if (_state == SessionState.idle) return;
+    debugPrint("🛑 STOP SESSION CALLED");
 
-    debugPrint("Stopping session...");
-
-    // Cancel all the timers first
+    // First thing, cancel all timers
     _frequencyTimer?.cancel();
     _pulseTimer?.cancel();
     _vibrationTimer?.cancel();
     _notificationUpdateTimer?.cancel();
 
-    // Stop vibration with extra care
+    // Stop vibration MULTIPLE TIMES to ensure it stops
     if (_hasVibrator) {
       try {
+        // Try multiple times with different approaches
         await Vibration.cancel();
-        // Additional cancel to make absolutely sure
-        await Future.delayed(Duration(milliseconds: 100));
+        await Future.delayed(Duration(milliseconds: 50));
+
+        // Try a second time
         await Vibration.cancel();
-        debugPrint("✅ Vibration stopped successfully");
+        await Future.delayed(Duration(milliseconds: 50));
+
+        // Third time with 0 duration vibration to reset state
+        await Vibration.vibrate(duration: 1);
+        await Future.delayed(Duration(milliseconds: 20));
+        await Vibration.cancel();
+
+        debugPrint("✅ Vibration stopped successfully (multiple attempts)");
       } catch (e) {
         debugPrint("❌ Error stopping vibration: $e");
       }
     }
 
-    // Rest of your stopSession method...
-    // Stop the overlay
-    await OverlayService.stopOverlay();
+    // Reset session state flags
+    isActive = false;
+    _state = SessionState.idle;
 
-    // Reset screen brightness
+    // Rest of your existing stopSession code...
     try {
+      // Stop the overlay
+      await OverlayService.stopOverlay();
+
+      // Reset screen brightness
       await BrightnessControl.resetBrightness();
       await BrightnessControl.restoreBrightness();
+
+      // Allow screen to turn off again
+      await WakelockPlus.disable();
+
+      // Stop foreground service if running
+      if (Platform.isAndroid) {
+        await FlutterForegroundTask.stopService();
+      }
     } catch (e) {
-      debugPrint("Error resetting brightness: $e");
+      debugPrint("Error during session cleanup: $e");
     }
 
-    // Allow screen to turn off again
-    WakelockPlus.disable();
-
-    // Stop foreground service if running
-    if (Platform.isAndroid) {
-      await FlutterForegroundTask.stopService();
-    }
-
-    _state = SessionState.idle;
+    // Notify listeners at the end
     notifyListeners();
   }
 
@@ -503,7 +512,7 @@ class SleepSessionManager with ChangeNotifier {
     });
   }
 
- // Update the _startFrequencyTimer method
+  // Update the _startFrequencyTimer method
   void _startFrequencyTimer() {
     double lastVibratedFrequency = currentFrequency;
 
@@ -534,10 +543,21 @@ class SleepSessionManager with ChangeNotifier {
 
         OverlayService.updateFrequency(currentFrequency);
 
-        // Add explicit stop condition
+        // Add explicit stop condition with more aggressive cleanup
         if (remainingTimeSeconds <= 0) {
+          debugPrint("⏰ Session time completed, stopping everything...");
+
+          // First ensure vibration stops immediately
+          Vibration.cancel();
+
+          // Cancel timer before calling stopSession() to prevent any racing conditions
+          timer.cancel();
+
+          // Important: set state to idle before stopSession to avoid any race conditions
+          _state = SessionState.idle;
+
+          // Finally call stopSession
           stopSession();
-          timer.cancel(); // Add this to ensure timer stops
         }
 
         notifyListeners();
@@ -548,11 +568,16 @@ class SleepSessionManager with ChangeNotifier {
     });
   }
 
-
 // Modify the directVibrate method for proper patterns
   Future<bool> directVibrate() async {
+    // Don't vibrate if session isn't running
+    if (_state != SessionState.running) {
+      await Vibration.cancel();
+      return false;
+    }
+
     await Vibration.cancel();
-    await Future.delayed(Duration(milliseconds: 50));
+    await Future.delayed(Duration(milliseconds: 10));
 
     try {
       final cycleMs = (1000 / currentFrequency).round();
@@ -567,12 +592,16 @@ class SleepSessionManager with ChangeNotifier {
    Pattern: ${vibrationMs}ms vib / ${pauseMs}ms pause
 ''');
 
-      await Vibration.vibrate(
-        pattern: pattern,
-        repeat: 0, // Important: 0 means repeat indefinitely
-      );
-
-      return true;
+      // Only start vibration if still in running state
+      if (_state == SessionState.running) {
+        await Vibration.vibrate(
+          pattern: pattern,
+          repeat: 0, // Important: 0 means repeat indefinitely
+        );
+        return true;
+      } else {
+        return false;
+      }
     } catch (e) {
       debugPrint("Vibration error: $e");
       return false;
@@ -649,7 +678,8 @@ class SleepSessionManager with ChangeNotifier {
       return [0, 400, 250, 400];
     }
   }
-void _startVibrationTimer() {
+
+  void _startVibrationTimer() {
     _vibrationTimer?.cancel();
 
     // Update vibration immediately when starting
@@ -748,7 +778,7 @@ void _startVibrationTimer() {
   // }
 
   // New: Direct vibration function that works reliably
- 
+
   // Handle app lifecycle changes
   void onAppLifecycleChange(AppLifecycleState state) async {
     switch (state) {
@@ -787,8 +817,6 @@ void _startVibrationTimer() {
         break;
     }
   }
-
- 
 
   // Reset error state
   void resetError() {
