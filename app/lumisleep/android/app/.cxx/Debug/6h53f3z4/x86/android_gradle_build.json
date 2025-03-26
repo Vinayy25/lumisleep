@@ -1,0 +1,28 @@
+{
+  "buildFiles": [
+    "/home/vinay/projects/flutter_linux_3.16.2-stable/flutter/packages/flutter_tools/gradle/src/main/groovy/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/vinay/Android/Sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/vinay/projects/lumisleep/app/lumisleep/android/app/.cxx/Debug/6h53f3z4/x86",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/vinay/Android/Sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/vinay/projects/lumisleep/app/lumisleep/android/app/.cxx/Debug/6h53f3z4/x86",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {},
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "/home/vinay/Android/Sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/clang.lld",
+      "cppCompilerExecutable": "/home/vinay/Android/Sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++.lld"
+    }
+  },
+  "cFileExtensions": [],
+  "cppFileExtensions": []
+}

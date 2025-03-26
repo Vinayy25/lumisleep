@@ -6,7 +6,6 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:lumisleep/screens/home_screen.dart';
 import 'package:lumisleep/state/sleep_session_manager.dart';
 import 'package:provider/provider.dart';
-import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:lumisleep/services/overlay_service.dart'
     hide SleepSessionManager;
@@ -147,7 +146,7 @@ void main() async {
     ),
   );
 
-  await AndroidAlarmManager.initialize();
+
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
       channelId: 'lumisleep_notification_channel',

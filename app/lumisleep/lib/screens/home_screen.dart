@@ -110,8 +110,8 @@ class HomeScreen extends StatelessWidget {
             ),
 
             // Pulse overlay appears when session is active
-            if (sleepManager.isRunning)
-              PulseOverlay(frequency: sleepManager.currentFrequency),
+            // if (sleepManager.isRunning)
+            //   PulseOverlay(frequency: sleepManager.currentFrequency),
           ],
         );
       },

@@ -1,0 +1,2 @@
+/home/vinay/projects/lumisleep/app/lumisleep/android/app/.cxx/Debug/4a5z5a5e/x86/CMakeFiles/edit_cache.dir
+/home/vinay/projects/lumisleep/app/lumisleep/android/app/.cxx/Debug/4a5z5a5e/x86/CMakeFiles/rebuild_cache.dir

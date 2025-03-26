@@ -11,17 +11,21 @@ dependencies:
   flutter:
     sdk: flutter
   provider: ^6.0.5
-  screen_brightness: ^0.2.2
-  vibration: ^1.7.7
-  flutter_foreground_task: ^6.0.0+1
-  android_alarm_manager_plus: ^3.0.1
+  # Fixed version for vibration
+  vibration: ^3.1.0
+  screen_brightness: ^0.2.2+1
+  flutter_foreground_task: ^6.5.0
   shared_preferences: ^2.2.0
-  wakelock_plus: ^1.2.10
-  flutter_overlay_window: ^0.4.5
-  flutter_animate: ^4.5.0
+  wakelock_plus: ^1.1.1
+  flutter_overlay_window: ^0.4.0
+  flutter_animate: ^4.2.0
   iconsax: ^0.0.8
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
+
+# This is very important - must be here
+flutter:
+  uses-material-design: true

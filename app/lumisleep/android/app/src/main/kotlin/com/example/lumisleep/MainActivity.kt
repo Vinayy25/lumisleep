@@ -2,7 +2,6 @@ package com.example.lumisleep
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -17,6 +16,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "setSystemBrightness" -> {
@@ -51,31 +51,27 @@ class MainActivity : FlutterActivity() {
             val brightness = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
             brightness / 255.0
         } catch (e: Exception) {
-            0.5 // Default to 50% brightness if there's an error
+            0.5 // Default to 50% brightness
         }
     }
 
     private fun setBrightness(brightness: Double, result: MethodChannel.Result) {
         if (Settings.System.canWrite(applicationContext)) {
             try {
-                // Convert 0.0-1.0 to 0-255
                 val brightnessValue = (brightness * 255).toInt().coerceIn(1, 255)
                 
-                // Set manual brightness mode
                 Settings.System.putInt(
                     contentResolver,
                     Settings.System.SCREEN_BRIGHTNESS_MODE,
                     Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
                 )
                 
-                // Update brightness
                 Settings.System.putInt(
                     contentResolver,
                     Settings.System.SCREEN_BRIGHTNESS,
                     brightnessValue
                 )
                 
-                // Also update the window brightness
                 val layoutParams = window.attributes
                 layoutParams.screenBrightness = brightness.toFloat()
                 window.attributes = layoutParams
@@ -91,14 +87,12 @@ class MainActivity : FlutterActivity() {
     
     private fun resetBrightness(result: MethodChannel.Result) {
         try {
-            // Set auto brightness mode
             Settings.System.putInt(
                 contentResolver,
                 Settings.System.SCREEN_BRIGHTNESS_MODE,
                 Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
             )
             
-            // Reset window brightness
             val layoutParams = window.attributes
             layoutParams.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
             window.attributes = layoutParams
@@ -114,14 +108,11 @@ class MainActivity : FlutterActivity() {
             return true
         } else {
             try {
-                // This intent opens system settings where user can grant permission
                 val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
                 intent.data = Uri.parse("package:$packageName")
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)  // Add this flag!
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
                 Log.d("BrightnessControl", "Launched settings screen for WRITE_SETTINGS permission")
-                
-                // Return false as permission isn't granted immediately
                 return false
             } catch (e: Exception) {
                 Log.e("BrightnessControl", "Error opening settings: ${e.message}")
