@@ -133,7 +133,6 @@ class SleepSessionManager with ChangeNotifier {
   bool isActive = false;
 
   // Add this line with your other class properties (around line 145)
-  double _savedBrightness = 0.5;
 
   // Get current session state
   SessionState get state => _state;
@@ -192,7 +191,7 @@ class SleepSessionManager with ChangeNotifier {
 
       if (_hasVibrator) {
         debugPrint("Testing vibration...");
-        await Vibration.vibrate(duration: 100);
+        await Vibration.vibrate(duration: 10);
         debugPrint("Vibration test completed");
       }
 
@@ -314,7 +313,7 @@ class SleepSessionManager with ChangeNotifier {
     // Update active vibration if session is running
     if (_state == SessionState.running) {
       if (useVibration) {
-        await _startVibrationTimer();
+        _startVibrationTimer();
       } else if (_vibrationTimer != null) {
         _vibrationTimer?.cancel();
         await Vibration.cancel();
@@ -325,21 +324,7 @@ class SleepSessionManager with ChangeNotifier {
     notifyListeners();
   }
 
-  // Check permissions and capabilities
-  Future<bool> _checkPermissions() async {
-    // Check if we can control brightness
-    try {
-      final brightness = await ScreenBrightness().current;
-      await ScreenBrightness().setScreenBrightness(brightness);
-      _canControlBrightness = true;
-    } catch (e) {
-      _canControlBrightness = false;
-      debugPrint('Cannot control brightness: $e');
-    }
 
-    // Don't block the session for permissions - just return success
-    return true;
-  }
 
   // Your startSession method can now use _savedBrightness without errors
   Future<bool> startSession(BuildContext context) async {
@@ -518,12 +503,13 @@ class SleepSessionManager with ChangeNotifier {
     });
   }
 
-  // Gradually decrease frequency over time
+ // Update the _startFrequencyTimer method
   void _startFrequencyTimer() {
     double lastVibratedFrequency = currentFrequency;
 
     _frequencyTimer?.cancel();
-    _frequencyTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _frequencyTimer =
+        Timer.periodic(const Duration(milliseconds: 200), (timer) {
       if (_state != SessionState.running) {
         timer.cancel();
         return;
@@ -535,29 +521,62 @@ class SleepSessionManager with ChangeNotifier {
         currentFrequency =
             startFrequency - ((startFrequency - endFrequency) * progress);
 
-        // Update overlay with new frequency
-        OverlayService.updateFrequency(currentFrequency);
+        // Clamp frequency to prevent going below end frequency
+        currentFrequency = currentFrequency.clamp(endFrequency, startFrequency);
 
-        // Update vibration if frequency has changed significantly
-        // This helps vibration stay in sync with visual pulsing
+        // Update vibration only when frequency changes significantly
         if (useVibration &&
             _hasVibrator &&
-            (lastVibratedFrequency - currentFrequency).abs() > 0.5) {
+            (currentFrequency - lastVibratedFrequency).abs() >= 0.5) {
           directVibrate();
           lastVibratedFrequency = currentFrequency;
         }
 
-        // End session when time is up
+        OverlayService.updateFrequency(currentFrequency);
+
+        // Add explicit stop condition
         if (remainingTimeSeconds <= 0) {
           stopSession();
+          timer.cancel(); // Add this to ensure timer stops
         }
 
         notifyListeners();
       } catch (e) {
-        _lastError = "Frequency calculation error: ${e.toString()}";
+        _lastError = "Frequency error: ${e.toString()}";
         debugPrint(_lastError);
       }
     });
+  }
+
+
+// Modify the directVibrate method for proper patterns
+  Future<bool> directVibrate() async {
+    await Vibration.cancel();
+    await Future.delayed(Duration(milliseconds: 50));
+
+    try {
+      final cycleMs = (1000 / currentFrequency).round();
+      final vibrationMs = min(cycleMs ~/ 2, 500); // Max 500ms vibration
+      final pauseMs = max(cycleMs - vibrationMs, 50); // Min 50ms pause
+
+      // Create repeating pattern: [vibrate, pause]
+      final pattern = [vibrationMs, pauseMs];
+
+      debugPrint('''
+🔄 ${currentFrequency.toStringAsFixed(1)}Hz 
+   Pattern: ${vibrationMs}ms vib / ${pauseMs}ms pause
+''');
+
+      await Vibration.vibrate(
+        pattern: pattern,
+        repeat: 0, // Important: 0 means repeat indefinitely
+      );
+
+      return true;
+    } catch (e) {
+      debugPrint("Vibration error: $e");
+      return false;
+    }
   }
 
   // Pulse brightness at current frequency
@@ -599,6 +618,7 @@ class SleepSessionManager with ChangeNotifier {
       updateBrightness();
     });
   }
+
   List<int> generateDynamicPattern(double frequency) {
     // Calculate where we are in the frequency range (0 = start frequency, 1 = end frequency)
     double progress =
@@ -629,155 +649,106 @@ class SleepSessionManager with ChangeNotifier {
       return [0, 400, 250, 400];
     }
   }
-
-
-  // Generate vibration pattern at current frequency - DIRECT PORT FROM WORKING CODE
-  Future<void> _startVibrationTimer() async {
+void _startVibrationTimer() {
     _vibrationTimer?.cancel();
 
-    try {
-      debugPrint(
-          "🟢 Starting vibration timer with frequency ${currentFrequency.toStringAsFixed(1)} Hz");
+    // Update vibration immediately when starting
+    directVibrate();
 
-      // Clean up any existing vibration first
-      try {
-        await Vibration.cancel();
-        debugPrint("Cancelled existing vibration");
-      } catch (e) {
-        debugPrint("Error cancelling existing vibration: $e");
+    // Update vibration pattern every 5 seconds or when frequency changes >10%
+    _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_state == SessionState.running && useVibration) {
+        directVibrate();
       }
-
-      // We'll create a custom pattern based on current frequency
-      void updateVibration() async {
-        if (_state != SessionState.running || !useVibration) {
-          await Vibration.cancel();
-          return;
-        }
-
-        // Calculate interval based on current frequency
-        final interval = (1000 / currentFrequency).round();
-
-        // For higher frequencies, we'll use shorter pulses
-        final pulseLength = (interval / 2).clamp(20, 200).round();
-
-        // Intensity varies with frequency (higher freq = lower intensity)
-        final intensity = _hasAmplitudeControl
-            ? ((1 -
-                        (currentFrequency - endFrequency) /
-                            (startFrequency - endFrequency)) *
-                    255)
-                .round()
-                .clamp(64, 255)
-            : 255;
-
-        debugPrint(
-            "🟡 Vibrating with pattern: ON for ${pulseLength}ms, OFF for ${interval - pulseLength}ms, intensity $intensity");
-
-        // Create pattern of alternating vibration/pause
-        try {
-          // IMPORTANT: Using a specific pattern format that worked in previous code
-          final pattern = generateDynamicPattern(currentFrequency);
-
-
-
-          if (_hasAmplitudeControl) {
-            final intensities = [0, intensity, 0];
-            debugPrint(
-                "📳 Calling vibrate with pattern $pattern, intensities $intensities, repeat -1");
-
-            await Vibration.vibrate(
-              pattern: pattern,
-              intensities: intensities,
-              repeat: -1,
-            );
-          } else {
-            debugPrint("📳 Calling vibrate with pattern $pattern, repeat -1");
-
-            await Vibration.vibrate(
-              pattern: pattern,
-              repeat: -1,
-            );
-          }
-
-          debugPrint("✅ Vibration started successfully");
-        } catch (e) {
-          debugPrint("❌ Vibration error: ${e.toString()}");
-          _lastError = "Vibration error: ${e.toString()}";
-        }
-      }
-
-      // Important: Call updateVibration immediately once, then setup periodic timer
-      updateVibration();
-
-      _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-        updateVibration();
-      });
-    } catch (e) {
-      _lastError = "Vibration initialization error: ${e.toString()}";
-      debugPrint("❌ Vibration initialization error: ${e.toString()}");
-    }
+    });
   }
+  // Generate vibration pattern at current frequency - DIRECT PORT FROM WORKING CODE
+  // Future<void> _startVibrationTimer() async {
+  //   _vibrationTimer?.cancel();
+
+  //   try {
+  //     debugPrint(
+  //         "🟢 Starting vibration timer with frequency ${currentFrequency.toStringAsFixed(1)} Hz");
+
+  //     // Clean up any existing vibration first
+  //     try {
+  //       await Vibration.cancel();
+  //       debugPrint("Cancelled existing vibration");
+  //     } catch (e) {
+  //       debugPrint("Error cancelling existing vibration: $e");
+  //     }
+
+  //     // We'll create a custom pattern based on current frequency
+  //     void updateVibration() async {
+  //       if (_state != SessionState.running || !useVibration) {
+  //         await Vibration.cancel();
+  //         return;
+  //       }
+
+  //       // Calculate interval based on current frequency
+  //       final interval = (1000 / currentFrequency).round();
+
+  //       // For higher frequencies, we'll use shorter pulses
+  //       final pulseLength = (interval / 2).clamp(20, 200).round();
+
+  //       // Intensity varies with frequency (higher freq = lower intensity)
+  //       final intensity = _hasAmplitudeControl
+  //           ? ((1 -
+  //                       (currentFrequency - endFrequency) /
+  //                           (startFrequency - endFrequency)) *
+  //                   255)
+  //               .round()
+  //               .clamp(64, 255)
+  //           : 255;
+
+  //       debugPrint(
+  //           "🟡 Vibrating with pattern: ON for ${pulseLength}ms, OFF for ${interval - pulseLength}ms, intensity $intensity");
+
+  //       // Create pattern of alternating vibration/pause
+  //       try {
+  //         // IMPORTANT: Using a specific pattern format that worked in previous code
+  //         final pattern = generateDynamicPattern(currentFrequency);
+
+  //         if (_hasAmplitudeControl) {
+  //           final intensities = [0, intensity, 0];
+  //           debugPrint(
+  //               "📳 Calling vibrate with pattern $pattern, intensities $intensities, repeat -1");
+
+  //           await Vibration.vibrate(
+  //             pattern: pattern,
+  //             intensities: intensities,
+  //             repeat: -1,
+  //           );
+  //         } else {
+  //           debugPrint("📳 Calling vibrate with pattern $pattern, repeat -1");
+
+  //           await Vibration.vibrate(
+  //             pattern: pattern,
+  //             repeat: -1,
+  //           );
+  //         }
+
+  //         debugPrint("✅ Vibration started successfully");
+  //       } catch (e) {
+  //         debugPrint("❌ Vibration error: ${e.toString()}");
+  //         _lastError = "Vibration error: ${e.toString()}";
+  //       }
+  //     }
+
+  //     // Important: Call updateVibration immediately once, then setup periodic timer
+  //     updateVibration();
+
+  //     _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+  //       updateVibration();
+  //     });
+  //   } catch (e) {
+  //     _lastError = "Vibration initialization error: ${e.toString()}";
+  //     debugPrint("❌ Vibration initialization error: ${e.toString()}");
+  //   }
+  // }
 
   // New: Direct vibration function that works reliably
-  Future<bool> directVibrate() async {
-    // First, cancel any existing vibration
-    try {
-      await Vibration.cancel();
-      await Future.delayed(Duration(milliseconds: 100));
-      debugPrint("📱 Previous vibration cancelled");
-    } catch (e) {
-      debugPrint("⚠️ Error cancelling vibration: $e");
-    }
-
-    debugPrint(
-        "📳 Starting direct vibration at ${currentFrequency.toStringAsFixed(1)}Hz");
-
-    try {
-      // Calculate pattern based on current frequency
-      final interval = (1000 / currentFrequency).round(); // Total cycle length
-      final pulseLength =
-          (interval / 2).clamp(20, 200).round(); // Active vibration time
-      final pauseLength = interval - pulseLength; // Pause time
-
-      // Use fixed pattern for higher frequencies
-      final pattern = currentFrequency > 15
-          ? [0, 100, 100] // Faster for high frequencies
-          : [0, pulseLength, pauseLength];
-
-      // Calculate intensity (higher for lower frequencies)
-      int intensity = 255;
-      if (_hasAmplitudeControl) {
-        // Higher intensity for lower frequencies
-        double intensityFactor = 1.0 -
-            ((currentFrequency - endFrequency) /
-                    (startFrequency - endFrequency))
-                .clamp(0.0, 1.0);
-        intensity = (intensityFactor * 255).round().clamp(100, 255);
-      }
-
-      debugPrint("📳 Vibrate pattern: $pattern, intensity: $intensity");
-
-      if (_hasAmplitudeControl) {
-        await Vibration.vibrate(
-          pattern: pattern,
-          intensities: [0, intensity, 0],
-          repeat: -1, // Continuous repeat
-        );
-      } else {
-        await Vibration.vibrate(
-          pattern: pattern,
-          repeat: -1, // Continuous repeat
-        );
-      }
-
-      debugPrint("✅ Direct vibration started successfully");
-      return true;
-    } catch (e) {
-      debugPrint("❌ Direct vibration error: $e");
-      return false;
-    }
-  }
-
+ 
   // Handle app lifecycle changes
   void onAppLifecycleChange(AppLifecycleState state) async {
     switch (state) {
@@ -817,25 +788,7 @@ class SleepSessionManager with ChangeNotifier {
     }
   }
 
-  Future<void> testVibration() async {
-    debugPrint("Testing basic vibration...");
-
-    // Test if simple vibration works
-    await Vibration.cancel();
-    await Future.delayed(const Duration(milliseconds: 200));
-
-    debugPrint("Simple vibration test:");
-    await Vibration.vibrate(duration: 500);
-    await Future.delayed(const Duration(seconds: 1));
-
-    debugPrint("Pattern test:");
-    await Vibration.vibrate(
-      pattern: [0, 300, 200, 300, 200],
-      repeat: 0,
-    );
-
-    debugPrint("Done testing vibration");
-  }
+ 
 
   // Reset error state
   void resetError() {
