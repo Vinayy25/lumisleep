@@ -1,0 +1,1 @@
+/home/vinay/projects/lumisleep/app/lumisleep/build/app/intermediates/cxx/RelWithDebInfo/1q4w613c/obj/armeabi-v7a

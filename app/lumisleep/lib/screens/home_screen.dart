@@ -14,6 +14,10 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<SleepSessionManager>(
       builder: (context, sleepManager, child) {
+        // Add debugging output
+        debugPrint(
+            "🔄 Rebuilding UI - isRunning: ${sleepManager.isRunning}, isActive: ${sleepManager.isActive}");
+
         return Stack(
           children: [
             // Gradient background
@@ -405,9 +409,11 @@ class HomeScreen extends StatelessWidget {
       child: GestureDetector(
         onTap: () async {
           if (sleepManager.isRunning) {
-            sleepManager.stopSession();
+            debugPrint("🔴 STOP button pressed");
+            await sleepManager.stopSession();
           } else {
-            sleepManager.startSession(context);
+            debugPrint("🟢 START button pressed");
+            await sleepManager.startSession(context);
           }
         },
         child: Container(
@@ -432,7 +438,8 @@ class HomeScreen extends StatelessWidget {
             ],
           ),
           child: Icon(
-            sleepManager.isActive == true ? Iconsax.pause : Iconsax.play,
+            // Use isRunning instead of isActive to be consistent
+            sleepManager.isRunning ? Iconsax.pause : Iconsax.play,
             color: Colors.white,
             size: 40,
           ),

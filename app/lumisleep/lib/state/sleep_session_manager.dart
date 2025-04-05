@@ -380,6 +380,8 @@ class SleepSessionManager with ChangeNotifier {
 
       if (started) {
         _state = SessionState.running;
+        isActive = true; // Make sure we set isActive to true
+
         // Start timer for session duration
         if (debugMode) {
           debugPrint("Starting session timer...");
@@ -390,6 +392,7 @@ class SleepSessionManager with ChangeNotifier {
       } else {
         _lastError = "Failed to start overlay";
         _state = SessionState.error;
+        isActive = false; // Make sure we set isActive to false
         notifyListeners();
         return false;
       }
@@ -438,43 +441,24 @@ class SleepSessionManager with ChangeNotifier {
     }
   }
 
-  // Make sure vibration is properly stopped
+  // Enhanced stopSession method with more aggressive vibration stopping
   Future<void> stopSession() async {
     debugPrint("🛑 STOP SESSION CALLED");
 
-    // First thing, cancel all timers
+    // FIRST: Set flags immediately to prevent any new vibrations
+    _state = SessionState.idle;
+    isActive = false;
+
+    // SECOND: Aggressively cancel all timers - do this before anything else
     _frequencyTimer?.cancel();
     _pulseTimer?.cancel();
     _vibrationTimer?.cancel();
     _notificationUpdateTimer?.cancel();
 
-    // Stop vibration MULTIPLE TIMES to ensure it stops
-    if (_hasVibrator) {
-      try {
-        // Try multiple times with different approaches
-        await Vibration.cancel();
-        await Future.delayed(Duration(milliseconds: 50));
+    // THIRD: Create a dedicated vibration stopping function that's more thorough
+    await _forceStopVibration();
 
-        // Try a second time
-        await Vibration.cancel();
-        await Future.delayed(Duration(milliseconds: 50));
-
-        // Third time with 0 duration vibration to reset state
-        await Vibration.vibrate(duration: 1);
-        await Future.delayed(Duration(milliseconds: 20));
-        await Vibration.cancel();
-
-        debugPrint("✅ Vibration stopped successfully (multiple attempts)");
-      } catch (e) {
-        debugPrint("❌ Error stopping vibration: $e");
-      }
-    }
-
-    // Reset session state flags
-    isActive = false;
-    _state = SessionState.idle;
-
-    // Rest of your existing stopSession code...
+    // Continue with other cleanup...
     try {
       // Stop the overlay
       await OverlayService.stopOverlay();
@@ -494,8 +478,43 @@ class SleepSessionManager with ChangeNotifier {
       debugPrint("Error during session cleanup: $e");
     }
 
-    // Notify listeners at the end
+    // Final notification to ensure UI updates
     notifyListeners();
+  }
+
+  // New dedicated method to force vibration to stop using multiple approaches
+  Future<void> _forceStopVibration() async {
+    if (!_hasVibrator) return;
+
+    debugPrint("🔇 Aggressively stopping all vibrations");
+
+    try {
+      // Approach 1: Basic cancel
+      await Vibration.cancel();
+      await Future.delayed(Duration(milliseconds: 50));
+
+      // Approach 2: Short vibration followed by cancel (resets vibration state)
+      await Vibration.vibrate(duration: 1);
+      await Future.delayed(Duration(milliseconds: 50));
+      await Vibration.cancel();
+
+      // Approach 3: Multiple cancels with delays
+      for (int i = 0; i < 3; i++) {
+        await Future.delayed(Duration(milliseconds: 50));
+        await Vibration.cancel();
+      }
+
+      // Approach 4: If available, try using amplitude control to fade out
+      if (_hasAmplitudeControl) {
+        await Vibration.vibrate(amplitude: 1, duration: 1);
+        await Future.delayed(Duration(milliseconds: 50));
+        await Vibration.cancel();
+      }
+
+      debugPrint("✅ Vibration stop commands completed");
+    } catch (e) {
+      debugPrint("❌ Error stopping vibration: $e");
+    }
   }
 
   // Update Android notification periodically
@@ -648,134 +667,37 @@ class SleepSessionManager with ChangeNotifier {
     });
   }
 
-  List<int> generateDynamicPattern(double frequency) {
-    // Calculate where we are in the frequency range (0 = start frequency, 1 = end frequency)
-    double progress =
-        (startFrequency - frequency) / (startFrequency - endFrequency);
-    progress = progress.clamp(0.0, 1.0);
-
-    debugPrint(
-        "🔄 Generating pattern for frequency ${frequency.toStringAsFixed(1)}Hz (progress: ${(progress * 100).toStringAsFixed(0)}%)");
-
-    // At the beginning (high frequency): shorter, faster pulses with more repetitions
-    // At the end (low frequency): longer, slower pulses with fewer repetitions
-
-    if (progress < 0.3) {
-      // High frequency range (beginning of session)
-      // Multiple short pulses for alertness
-      return [0, 200, 150, 200, 150, 200, 150];
-    } else if (progress < 0.6) {
-      // Mid frequency range (middle of session)
-      // Medium pulses for transition
-      return [0, 250, 180, 250, 180];
-    } else if (progress < 0.8) {
-      // Lower frequency range (approaching end)
-      // Longer, fewer pulses for relaxation
-      return [0, 300, 200, 300, 200];
-    } else {
-      // Very low frequency (end of session)
-      // Long, deep pulses for deep relaxation
-      return [0, 400, 250, 400];
-    }
-  }
-
   void _startVibrationTimer() {
     _vibrationTimer?.cancel();
 
-    // Update vibration immediately when starting
-    directVibrate();
+    // Start with a clean state - cancel any existing vibration
+    Vibration.cancel();
 
-    // Update vibration pattern every 5 seconds or when frequency changes >10%
-    _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    // Short delay to ensure vibration is fully canceled before starting new pattern
+    Future.delayed(Duration(milliseconds: 100), () {
+      // Only start vibration if the session is still running after the delay
       if (_state == SessionState.running && useVibration) {
         directVibrate();
       }
     });
+
+    // Create a more responsive timer that continuously checks session state
+    _vibrationTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      // IMPORTANT: Always check session state before each vibration attempt
+      if (_state != SessionState.running) {
+        // Session is no longer running, force stop vibration and timer
+        _vibrationTimer?.cancel();
+        Vibration.cancel();
+        return;
+      }
+
+      if (useVibration) {
+        // Only update vibration if it's been a while since the last update
+        // This reduces unnecessary vibration restarts
+        directVibrate();
+      }
+    });
   }
-  // Generate vibration pattern at current frequency - DIRECT PORT FROM WORKING CODE
-  // Future<void> _startVibrationTimer() async {
-  //   _vibrationTimer?.cancel();
-
-  //   try {
-  //     debugPrint(
-  //         "🟢 Starting vibration timer with frequency ${currentFrequency.toStringAsFixed(1)} Hz");
-
-  //     // Clean up any existing vibration first
-  //     try {
-  //       await Vibration.cancel();
-  //       debugPrint("Cancelled existing vibration");
-  //     } catch (e) {
-  //       debugPrint("Error cancelling existing vibration: $e");
-  //     }
-
-  //     // We'll create a custom pattern based on current frequency
-  //     void updateVibration() async {
-  //       if (_state != SessionState.running || !useVibration) {
-  //         await Vibration.cancel();
-  //         return;
-  //       }
-
-  //       // Calculate interval based on current frequency
-  //       final interval = (1000 / currentFrequency).round();
-
-  //       // For higher frequencies, we'll use shorter pulses
-  //       final pulseLength = (interval / 2).clamp(20, 200).round();
-
-  //       // Intensity varies with frequency (higher freq = lower intensity)
-  //       final intensity = _hasAmplitudeControl
-  //           ? ((1 -
-  //                       (currentFrequency - endFrequency) /
-  //                           (startFrequency - endFrequency)) *
-  //                   255)
-  //               .round()
-  //               .clamp(64, 255)
-  //           : 255;
-
-  //       debugPrint(
-  //           "🟡 Vibrating with pattern: ON for ${pulseLength}ms, OFF for ${interval - pulseLength}ms, intensity $intensity");
-
-  //       // Create pattern of alternating vibration/pause
-  //       try {
-  //         // IMPORTANT: Using a specific pattern format that worked in previous code
-  //         final pattern = generateDynamicPattern(currentFrequency);
-
-  //         if (_hasAmplitudeControl) {
-  //           final intensities = [0, intensity, 0];
-  //           debugPrint(
-  //               "📳 Calling vibrate with pattern $pattern, intensities $intensities, repeat -1");
-
-  //           await Vibration.vibrate(
-  //             pattern: pattern,
-  //             intensities: intensities,
-  //             repeat: -1,
-  //           );
-  //         } else {
-  //           debugPrint("📳 Calling vibrate with pattern $pattern, repeat -1");
-
-  //           await Vibration.vibrate(
-  //             pattern: pattern,
-  //             repeat: -1,
-  //           );
-  //         }
-
-  //         debugPrint("✅ Vibration started successfully");
-  //       } catch (e) {
-  //         debugPrint("❌ Vibration error: ${e.toString()}");
-  //         _lastError = "Vibration error: ${e.toString()}";
-  //       }
-  //     }
-
-  //     // Important: Call updateVibration immediately once, then setup periodic timer
-  //     updateVibration();
-
-  //     _vibrationTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-  //       updateVibration();
-  //     });
-  //   } catch (e) {
-  //     _lastError = "Vibration initialization error: ${e.toString()}";
-  //     debugPrint("❌ Vibration initialization error: ${e.toString()}");
-  //   }
-  // }
 
   // New: Direct vibration function that works reliably
 
@@ -924,10 +846,14 @@ class SleepSessionTaskHandler extends TaskHandler {
   // Simplified handler to maintain foreground service
   Timer? _keepAliveTimer;
 
+  // Add this boolean flag to track session state in the background
+  bool isSessionActive = false;
+
   @override
   Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {
     try {
       debugPrint('Foreground task started');
+      isSessionActive = true;
     } catch (e) {
       debugPrint('Error in onStart: $e');
     }
@@ -959,6 +885,15 @@ class SleepSessionTaskHandler extends TaskHandler {
     try {
       // Clean up
       _keepAliveTimer?.cancel();
+
+      // IMPORTANT: Make sure vibration stops when foreground service is destroyed
+      isSessionActive = false;
+      try {
+        await Vibration.cancel();
+      } catch (e) {
+        // Ignore errors here
+      }
+
       debugPrint('Foreground task destroyed');
     } catch (e) {
       debugPrint('Error in onDestroy: $e');
