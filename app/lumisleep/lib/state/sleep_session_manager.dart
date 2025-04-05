@@ -107,7 +107,8 @@ class SleepSessionManager with ChangeNotifier {
   double currentFrequency = 20.0;
   SessionState _state = SessionState.idle;
   bool useVibration = true;
-  Duration sessionDuration = const Duration(minutes: 15);
+  Duration sessionDuration =
+      const Duration(minutes: 5); // Changed from 15 to 5 minutes
   String? _lastError;
 
   // Animation control
@@ -236,8 +237,9 @@ class SleepSessionManager with ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      // Load session duration (default 15min, or 900 seconds)
-      final seconds = prefs.getInt('sessionDurationSeconds') ?? 900;
+      // Load session duration (default 5min, or 300 seconds)
+      final seconds = prefs.getInt('sessionDurationSeconds') ??
+          300; // Changed from 900 to 300
       sessionDuration = Duration(seconds: seconds);
 
       // Load vibration preference (default true)
